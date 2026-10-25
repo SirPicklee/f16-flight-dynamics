@@ -6,20 +6,21 @@ A nonlinear six-degree-of-freedom F-16 flight dynamics model in Python, built fr
 NASA wind-tunnel data and validated step by step against the reference model of
 Stevens & Lewis, *Aircraft Control and Simulation*. The project covers the full
 chain from aerodynamic tables to trim, linearization, modal analysis, time-domain
-simulation and a stability augmentation system for the statically unstable airframe.
+simulation and a flight control system for the statically unstable airframe.
 
 ## Highlights
 
 - **Validated model:** trim, eigenvalues and Jacobians match the reference
-  implementation; 48 automated tests check both numbers and physics.
+  implementation; 56 automated tests check both numbers and physics.
 - **Relaxed static stability reproduced:** at the nominal CG the airframe has an
   unstable pitch root, exactly why the real F-16 needs fly-by-wire.
 - **Linear model validity quantified:** linear vs nonlinear error is 0.5 % for a
   1 deg elevator doublet and 26 % for 5 deg, where alpha reaches the table edge.
 - **Cross-validated modes:** the dutch roll period measured from nonlinear
   simulation agrees with the eigenvalue prediction within 3 %.
-- **Pitch SAS and yaw damper** designed by pole placement, robust across
-  CG 0.30–0.38 and 350–700 ft/s.
+- **Flight control system:** pitch SAS and yaw damper designed by pole placement,
+  with actuator rate limits and washout; 63.8 deg phase margin and 374 ms delay
+  margin in pitch, robust across CG 0.30–0.38 and 350–700 ft/s.
 
 ## Validation results
 
@@ -74,6 +75,23 @@ wn = 3 rad/s, zeta = 0.7 and dutch roll damping of 0.5.
 
 ![SAS pitch response](figures/sas_pitch.png)
 
+### Flight control system with actuators (xcg = 0.35)
+
+First-order surface actuators (20.2 rad/s) with position and rate limits,
+and a 1 s washout on the yaw-damper feedback.
+
+| Loop | Phase margin | Delay margin | Gain margin |
+|---|---|---|---|
+| Pitch (alpha + q) | 63.8 deg at 2.98 rad/s | 374 ms | gain may drop 18.8 dB before instability |
+| Yaw damper | 109.5 deg at 4.29 rad/s | 445 ms | open loop stable |
+
+With the washout, dutch roll damping is 0.59 while the spiral mode stays free
+(time constant ~70 s), so the damper does not oppose steady turns. Large inputs
+saturate the 60 deg/s elevator rate limit, which delays the SAS response and
+roughly doubles the angle-of-attack excursion compared with ideal surfaces.
+
+![FCS pitch response](figures/fcs_pitch.png)
+
 ## Physics found in the data
 
 Several tests check physical behavior rather than numbers:
@@ -111,10 +129,12 @@ f16/
   linearize.py     numerical Jacobians and modal analysis
   simulate.py      open- and closed-loop time simulation
   sas.py           pitch SAS and yaw damper design
-tests/             48 tests: reference values and physical checks
+  fcs.py           actuators, washout and stability margins
+tests/             56 tests: reference values and physical checks
 modal_report.py        trim and modes at several CG positions
 compare_responses.py   linear vs nonlinear doublet responses
 sas_demo.py            open-loop vs SAS responses
+fcs_demo.py            stability margins and actuator effects
 ```
 
 ## Quick start
@@ -129,13 +149,15 @@ pytest -v
 python modal_report.py
 python compare_responses.py
 python sas_demo.py
+python fcs_demo.py
 ```
 
 ## Limitations
 
 - Euler angles are singular at theta = +/-90 deg; quaternions would be needed for vertical maneuvers.
-- No actuator dynamics or rate limits; the SAS is evaluated with ideal surfaces.
-- The yaw damper has no washout filter, so it also opposes steady turns.
+- Sensor dynamics and computational delay are not modeled; the delay margin
+  shows how much latency the loops can tolerate.
+- SAS gains are designed at a single flight condition; no gain scheduling.
 - Aerodynamic data ends at alpha = 45 deg; post-stall behavior is extrapolated.
 
 ## References
