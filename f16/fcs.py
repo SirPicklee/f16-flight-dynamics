@@ -146,11 +146,18 @@ class Margins:
     gain_reduction_db: float  # how far the loop gain may drop before instability
 
 
+def loop_transfer(aa: np.ndarray, ba: np.ndarray, k: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Loop transfer L(jw) = -K (jwI - Aa)^-1 Ba for a loop broken at the actuator input."""
+    n = aa.shape[0]
+    m = 1j * w[:, None, None] * np.eye(n) - aa          # one matrix per frequency
+    x = np.linalg.solve(m, np.broadcast_to(ba, (len(w), n, 1)))
+    return -(k @ x)[:, 0, 0]
+
+
 def loop_margins(aa: np.ndarray, ba: np.ndarray, k: np.ndarray) -> Margins:
     """Phase, delay and gain-reduction margins of the loop broken at the actuator input."""
-    n = aa.shape[0]
     w = np.logspace(-2, 3, 20000)
-    loop = np.array([(-k @ np.linalg.solve(1j * wi * np.eye(n) - aa, ba))[0, 0] for wi in w])
+    loop = loop_transfer(aa, ba, k, w)
     i = int(np.where(np.diff(np.sign(np.abs(loop) - 1.0)) != 0)[0][-1])
     pm = 180.0 + float(np.degrees(np.angle(loop[i])))
     wc = float(w[i])
@@ -158,7 +165,13 @@ def loop_margins(aa: np.ndarray, ba: np.ndarray, k: np.ndarray) -> Margins:
     def max_real(scale):
         return float(np.max(np.linalg.eigvals(aa + scale * ba @ k).real))
 
-    scales = np.linspace(1.0, 0.0, 2001)
-    unstable = [s for s in scales if max_real(s) >= 0.0]
-    gain_red = 20.0 * np.log10(unstable[0]) if unstable else -np.inf
+    # Smallest gain scale that still stabilizes the loop (bisection on [0, 1])
+    if max_real(0.0) < 0.0:
+        gain_red = -np.inf               # open loop already stable
+    else:
+        lo, hi = 0.0, 1.0                # unstable at lo, stable at hi
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (lo, mid) if max_real(mid) < 0.0 else (mid, hi)
+        gain_red = 20.0 * np.log10(hi)
     return Margins(pm, wc, np.radians(pm) / wc, float(gain_red))
