@@ -16,8 +16,8 @@ XCGR = 0.35      # reference CG location [fraction of CBAR]
 
 # --- Mass properties ---
 G = 32.17        # gravitational acceleration [ft/s^2]
-WEIGHT = 20500.0 # aircraft weight [lbf]
-MASS = WEIGHT / G  # [slug]
+MASS = 1.0 / 1.57e-3  # [slug], reference gives inverse mass 1/m = 1.57e-3 [1/slug]
+WEIGHT = MASS * G     # [lbf], about 20,490 lbf
 
 JXX = 9496.0     # roll moment of inertia [slug*ft^2]
 JYY = 55814.0    # pitch moment of inertia [slug*ft^2]
