@@ -43,3 +43,16 @@ def simulate_linear(a: np.ndarray, b: np.ndarray, x0: np.ndarray, u0: np.ndarray
                     (0.0, t_final), np.zeros(len(x0)), t_eval=t_eval,
                     max_step=dt, rtol=1e-8, atol=1e-10)
     return sol.t, sol.y.T + x0
+
+
+StateFeedbackFn = Callable[[float, np.ndarray], np.ndarray]
+
+
+def simulate_closed_loop(x0: np.ndarray, controller: StateFeedbackFn, t_final: float,
+                         dt: float = 0.01, xcg: float = c.XCGR):
+    """Integrate the nonlinear model with a controller u = controller(t, x)."""
+    t_eval = np.arange(0.0, t_final + dt / 2, dt)
+    sol = solve_ivp(lambda t, x: f16_derivatives(x, controller(t, x), xcg),
+                    (0.0, t_final), x0, t_eval=t_eval,
+                    max_step=dt, rtol=1e-8, atol=1e-10)
+    return sol.t, sol.y.T
