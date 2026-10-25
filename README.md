@@ -91,6 +91,26 @@ saturate the 60 deg/s elevator rate limit, which delays the SAS response and
 roughly doubles the angle-of-attack excursion compared with ideal surfaces.
 
 ![FCS pitch response](figures/fcs_pitch.png)
+### Flight envelope survey (xcg = 0.35)
+
+Trim and linearization over 551 grid points (250–950 ft/s, 0–45,000 ft).
+A point is inside the envelope when trim exists below full throttle, with
+alpha below the 25 deg limiter and Mach below 0.9: 474 points qualify.
+
+![Envelope stability](figures/envelope_stability.png)
+
+Pitch stability depends on trim angle of attack rather than on speed or
+altitude: every grid point falls into bands set by the local slope of
+Cm(alpha). The airframe is divergent for alpha below 5 deg and between 10 and
+15 deg, with the fastest divergence (time to double 0.67 s) at high speed and
+low altitude. The sharp jumps at 5 deg boundaries are an artifact of linear
+table interpolation, whose derivatives are piecewise constant; a smooth
+aerodynamic representation would give continuous transitions.
+
+![Stability vs alpha](figures/stability_vs_alpha.png)
+
+Dutch roll damping stays between 0.07 and 0.18 across the envelope and falls
+with altitude, so a yaw damper is needed everywhere.
 
 ## Physics found in the data
 
