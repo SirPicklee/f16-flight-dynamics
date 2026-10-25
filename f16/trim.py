@@ -50,13 +50,13 @@ def _build(z: np.ndarray, vt: float, alt: float, gamma: float):
 
 
 def trim_level(vt: float, alt: float = 0.0, gamma_deg: float = 0.0,
-               xcg: float = c.XCGR) -> TrimResult:
+               xcg: float = c.XCGR, model: str = "tables") -> TrimResult:
     """Trim for steady wings-level flight (climb if gamma_deg > 0)."""
     gamma = np.radians(gamma_deg)
 
     def residuals(z):
         x, u = _build(z, vt, alt, gamma)
-        xd = f16_derivatives(x, u, xcg)
+        xd = f16_derivatives(x, u, xcg, model)
         # Scale so each residual is of similar size near the solution
         return np.array([xd[VT], 100.0 * xd[ALPHA], 100.0 * xd[Q]])
 

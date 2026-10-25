@@ -25,7 +25,8 @@ _DX = np.array([0.1, 1e-4, 1e-4, 1e-4, 1e-4, 1e-4,
 _DU = np.array([1e-4, 1e-3, 1e-3, 1e-3])
 
 
-def linearize(x0: np.ndarray, u0: np.ndarray, xcg: float = c.XCGR):
+def linearize(x0: np.ndarray, u0: np.ndarray, xcg: float = c.XCGR,
+              model: str = "tables"):
     """Return (A, B) Jacobians of f16_derivatives at (x0, u0)."""
     n, m = len(x0), len(u0)
     a = np.zeros((n, n))
@@ -33,13 +34,13 @@ def linearize(x0: np.ndarray, u0: np.ndarray, xcg: float = c.XCGR):
     for j in range(n):
         dx = np.zeros(n)
         dx[j] = _DX[j]
-        a[:, j] = (f16_derivatives(x0 + dx, u0, xcg)
-                   - f16_derivatives(x0 - dx, u0, xcg)) / (2.0 * _DX[j])
+        a[:, j] = (f16_derivatives(x0 + dx, u0, xcg, model)
+                   - f16_derivatives(x0 - dx, u0, xcg, model)) / (2.0 * _DX[j])
     for j in range(m):
         du = np.zeros(m)
         du[j] = _DU[j]
-        b[:, j] = (f16_derivatives(x0, u0 + du, xcg)
-                   - f16_derivatives(x0, u0 - du, xcg)) / (2.0 * _DU[j])
+        b[:, j] = (f16_derivatives(x0, u0 + du, xcg, model)
+                   - f16_derivatives(x0, u0 - du, xcg, model)) / (2.0 * _DU[j])
     return a, b
 
 

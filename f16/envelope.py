@@ -41,15 +41,16 @@ class EnvelopePoint:
         return float(np.log(2.0) / self.max_real_long)
 
 
-def survey_point(vt: float, alt: float, xcg: float = c.XCGR) -> EnvelopePoint:
+def survey_point(vt: float, alt: float, xcg: float = c.XCGR,
+                 model: str = "tables") -> EnvelopePoint:
     """Trim and linearize at one condition, if it is inside the envelope."""
     mach, qbar = adc(vt, alt)
-    r = trim_level(vt, alt=alt, xcg=xcg)
+    r = trim_level(vt, alt=alt, xcg=xcg, model=model)
     feasible = r.success and r.alpha_deg <= ALPHA_LIMIT_DEG and mach <= MACH_LIMIT
     pt = EnvelopePoint(vt, alt, mach, qbar, feasible)
     if not feasible:
         return pt
-    a, _ = linearize(r.x, r.u, xcg=xcg)
+    a, _ = linearize(r.x, r.u, xcg=xcg, model=model)
     long_roots = np.linalg.eigvals(submatrix(a, LONG_STATES))
     # Dutch roll is the highest-frequency lateral oscillation (at low speed the
     # roll and spiral roots can also merge into a slow lateral oscillation)
@@ -61,9 +62,10 @@ def survey_point(vt: float, alt: float, xcg: float = c.XCGR) -> EnvelopePoint:
     return pt
 
 
-def survey(speeds, altitudes, xcg: float = c.XCGR) -> list[list[EnvelopePoint]]:
+def survey(speeds, altitudes, xcg: float = c.XCGR,
+           model: str = "tables") -> list[list[EnvelopePoint]]:
     """Survey a grid. Result is indexed [altitude][speed]."""
-    return [[survey_point(float(v), float(h), xcg) for v in speeds] for h in altitudes]
+    return [[survey_point(float(v), float(h), xcg, model) for v in speeds] for h in altitudes]
 
 
 def field(grid: list[list[EnvelopePoint]], name: str) -> np.ndarray:

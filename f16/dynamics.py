@@ -36,11 +36,15 @@ import numpy as np
 
 from f16 import aero_tables as aero
 from f16 import constants as c
+from f16.aero_morelli import morelli_coefficients
 from f16.atmosphere import adc
 from f16.engine import pdot, tgear, thrust
 
 # Index names so the code reads like the equations
 VT, ALPHA, BETA, PHI, THETA, PSI, P, Q, R, NORTH, EAST, ALT, POW = range(13)
+
+# Aerodynamic models: "tables" (NASA lookup tables) or "morelli" (polynomial fit)
+AERO_MODELS = ("tables", "morelli")
 
 
 def inertia_coefficients(jxx: float, jyy: float, jzz: float, jxz: float) -> tuple:
@@ -61,8 +65,14 @@ def inertia_coefficients(jxx: float, jyy: float, jzz: float, jxz: float) -> tupl
 C1, C2, C3, C4, C5, C6, C7, C8, C9 = inertia_coefficients(c.JXX, c.JYY, c.JZZ, c.JXZ)
 
 
-def aero_coefficients(vt, alpha_deg, beta_deg, p, q, r, el, ail, rdr, xcg):
+def aero_coefficients(vt, alpha_deg, beta_deg, p, q, r, el, ail, rdr, xcg,
+                      model: str = "tables"):
     """Total body-axis force and moment coefficients (CX, CY, CZ, Cl, Cm, Cn)."""
+    if model == "morelli":
+        return morelli_coefficients(vt, alpha_deg, beta_deg, p, q, r, el, ail, rdr, xcg)
+    if model != "tables":
+        raise ValueError(f"unknown aero model {model!r}, expected one of {AERO_MODELS}")
+
     d_ail = ail / 20.0
     d_rdr = rdr / 30.0
 
@@ -93,7 +103,8 @@ def aero_coefficients(vt, alpha_deg, beta_deg, p, q, r, el, ail, rdr, xcg):
     return cx, cy, cz, cl, cm, cn
 
 
-def f16_derivatives(x: np.ndarray, u: np.ndarray, xcg: float = c.XCGR) -> np.ndarray:
+def f16_derivatives(x: np.ndarray, u: np.ndarray, xcg: float = c.XCGR,
+                    model: str = "tables") -> np.ndarray:
     """Return the state derivative dx/dt for state x and control u."""
     vt, alpha, beta = x[VT], x[ALPHA], x[BETA]
     phi, theta, psi = x[PHI], x[THETA], x[PSI]
@@ -110,7 +121,7 @@ def f16_derivatives(x: np.ndarray, u: np.ndarray, xcg: float = c.XCGR) -> np.nda
 
     # Aerodynamics
     cx, cy, cz, cl, cm, cn = aero_coefficients(
-        vt, alpha * c.RAD2DEG, beta * c.RAD2DEG, p, q, r, el, ail, rdr, xcg)
+        vt, alpha * c.RAD2DEG, beta * c.RAD2DEG, p, q, r, el, ail, rdr, xcg, model)
 
     # Body-axis velocity components
     cbeta = math.cos(beta)
