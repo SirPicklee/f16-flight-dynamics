@@ -1,0 +1,10 @@
+[project]
+name = "f16-flight-dynamics"
+version = "0.1.0"
+description = "F-16 nonlinear 6-DoF flight dynamics model with trim, linearization and modal analysis"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "matplotlib"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
