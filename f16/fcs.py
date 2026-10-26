@@ -8,7 +8,10 @@ through an optional lead filter and a computing delay (first-order Pade),
 placed where the linear Monte Carlo analysis puts them: on the SAS output,
 before the pilot command is added.
 
-Augmented state z (19):
+With g_command = (kp, ki) the pilot pitch input is a load factor increment
+[g] instead of an elevator angle, tracked by a PI loop on the nz error.
+
+Augmented state z (20):
     z[0:13]  aircraft state (see dynamics.py)
     z[13]    elevator position [deg]
     z[14]    aileron position  [deg]
@@ -16,6 +19,7 @@ Augmented state z (19):
     z[16]    washout filter state [rad/s]
     z[17]    lead filter state [deg]
     z[18]    delay (Pade) state [deg]
+    z[19]    integral of the nz error [g s]
 """
 
 from dataclasses import dataclass
@@ -25,13 +29,13 @@ import numpy as np
 from scipy.integrate import solve_ivp
 
 from f16 import constants as c
-from f16.dynamics import ALPHA, Q, R, f16_derivatives
+from f16.dynamics import ALPHA, Q, R, f16_derivatives, load_factor_nz
 from f16.linearize import LAT_STATES, LONG_STATES
 from f16.sas import SasGains
 
 N_AIRCRAFT = 13
-N_STATES = 19
-DE, DA, DR, XW, XF, XD = 13, 14, 15, 16, 17, 18
+N_STATES = 20
+DE, DA, DR, XW, XF, XD, XI = 13, 14, 15, 16, 17, 18, 19
 
 
 @dataclass(frozen=True)
@@ -55,27 +59,39 @@ PilotFn = Callable[[float], np.ndarray]
 
 
 class FlightControlSystem:
-    """SAS with actuators, washout, optional lead filter and delay, wrapped
-    around the nonlinear model.
+    """SAS with actuators, washout, optional lead filter, delay and g command,
+    wrapped around the nonlinear model.
 
     `lead` is any object with `zero` and `pole` attributes [rad/s], for
     example f16.monte_carlo.LeadFilter. `delay` is in seconds.
+    `g_command` is (kp [deg/g], ki [deg/(g s)]) or None for direct elevator input.
     """
 
     def __init__(self, x0: np.ndarray, u0: np.ndarray, gains: SasGains,
                  washout_tau: float = 1.0, xcg: float = c.XCGR, lead=None,
                  delay: float = 0.0, elevator: Actuator = ELEVATOR,
-                 model: str = "tables"):
+                 model: str = "tables", g_command: tuple[float, float] | None = None):
         self.x0, self.u0, self.g = x0, u0, gains
         self.tau, self.xcg = washout_tau, xcg
         self.lead, self.delay = lead, delay
         self.elevator, self.model = elevator, model
+        self.g_command = g_command
+        self.nz0 = load_factor_nz(x0, u0, xcg, model)
 
     def initial_state(self) -> np.ndarray:
         z = np.zeros(N_STATES)
         z[:N_AIRCRAFT] = self.x0
         z[DE], z[DA], z[DR] = self.u0[1], self.u0[2], self.u0[3]
         return z
+
+    def nz(self, z: np.ndarray, pilot: np.ndarray) -> float:
+        """Current load factor, using the actual surface positions."""
+        u = np.array([self.u0[0] + pilot[0], z[DE], z[DA], z[DR]])
+        return load_factor_nz(z[:N_AIRCRAFT], u, self.xcg, self.model)
+
+    def nz_error(self, z: np.ndarray, pilot: np.ndarray) -> float:
+        """Commanded minus actual load factor increment [g]."""
+        return pilot[1] - (self.nz(z, pilot) - self.nz0)
 
     def _pitch_feedback(self, z: np.ndarray) -> tuple[float, float]:
         """Raw SAS signal e and lead-filtered SAS signal, both in deg of elevator."""
@@ -91,8 +107,13 @@ class FlightControlSystem:
         _, sas = self._pitch_feedback(z)
         if self.delay > 0.0:
             sas = 2.0 * z[XD] - sas        # Pade output
+        if self.g_command is None:
+            pilot_pitch = pilot[1]
+        else:
+            kp, ki = self.g_command
+            pilot_pitch = -(kp * self.nz_error(z, pilot) + ki * z[XI])
         r_washed = z[R] - z[XW]
-        de = self.u0[1] + sas + pilot[1]
+        de = self.u0[1] + sas + pilot_pitch
         da = self.u0[2] + pilot[2]
         dr = self.u0[3] + self.g.k_r * np.degrees(r_washed) + pilot[3]
         return np.array([de, da, dr])
@@ -112,10 +133,12 @@ class FlightControlSystem:
             zd[XF] = -self.lead.pole * z[XF] + e
         if self.delay > 0.0:
             zd[XD] = (2.0 / self.delay) * (sas - z[XD])
+        if self.g_command is not None:
+            zd[XI] = self.nz_error(z, p)
         return zd
 
     def simulate(self, pilot: PilotFn, t_final: float, dt: float = 0.01):
-        """Returns (t, Z) with Z of shape (N, 19)."""
+        """Returns (t, Z) with Z of shape (N, 20)."""
         t_eval = np.arange(0.0, t_final + dt / 2, dt)
         sol = solve_ivp(lambda t, z: self.derivatives(t, z, pilot),
                         (0.0, t_final), self.initial_state(), t_eval=t_eval,

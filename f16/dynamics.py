@@ -168,3 +168,16 @@ def f16_derivatives(x: np.ndarray, u: np.ndarray, xcg: float = c.XCGR,
     xd[ALT] = uu * sth - vv * sph * cth - ww * cph * cth
 
     return xd
+
+
+def load_factor_nz(x: np.ndarray, u: np.ndarray, xcg: float = c.XCGR,
+                   model: str = "tables") -> float:
+    """Normal load factor at the CG, nz = -Z_aero / W (positive when pulling up).
+
+    This is the g felt by the pilot along the body z axis. Thrust acts along
+    the body x axis and does not contribute.
+    """
+    _, qbar = adc(x[VT], x[ALT])
+    cz = aero_coefficients(x[VT], x[ALPHA] * c.RAD2DEG, x[BETA] * c.RAD2DEG,
+                           x[P], x[Q], x[R], u[1], u[2], u[3], xcg, model)[2]
+    return float(-qbar * c.S * cz / c.WEIGHT)
