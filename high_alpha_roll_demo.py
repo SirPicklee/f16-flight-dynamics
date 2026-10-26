@@ -1,4 +1,5 @@
-"""Rolling at high angle of attack: body-axis vs stability-axis roll."""
+"""Rolling at high angle of attack: body-axis roll, stability-axis roll and
+stability-axis roll with aileron-rudder interconnect (ARI)."""
 
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import numpy as np
 from f16.dynamics import ALPHA, BETA, PHI
 from f16.fcs import DA, DR, FlightControlSystem
 from f16.linearize import linearize
-from f16.roll import design_roll_command
+from f16.roll import design_ari, design_roll_command
 from f16.sas import design_pitch_sas, design_yaw_damper
 from f16.trim import trim_level
 
@@ -30,17 +31,24 @@ def main():
     g = design_pitch_sas(a, b)
     g.k_r = design_yaw_damper(a, b)
     roll = design_roll_command(a, b)
+    k_ari = design_ari(a, b, r.x[ALPHA], roll[1])
     print(f"Trim at {VT0:.0f} ft/s, sea level: alpha = {r.alpha_deg:.1f} deg")
+    print(f"ARI gain: {k_ari:.4f} deg of rudder per deg/s "
+          f"({k_ari * P_CMD:.1f} deg of rudder at {P_CMD:.0f} deg/s)")
     print(f"Kinematic estimate for body-axis roll to {P_CMD:.0f} deg bank: "
           f"beta ~ alpha * sin(phi) = {r.alpha_deg * np.sin(np.radians(P_CMD)):.1f} deg\n")
 
+    cases = [("body-axis roll", False, 0.0),
+             ("stability-axis roll", True, 0.0),
+             ("stability-axis roll + ARI", True, k_ari)]
+
     fig, axes = plt.subplots(4, 1, figsize=(8, 9), sharex=True)
-    for name, stability_axis in (("body-axis roll", False), ("stability-axis roll", True)):
+    for name, stability_axis, ari in cases:
         fcs = FlightControlSystem(r.x, r.u, g, roll_command=roll,
-                                  stability_axis=stability_axis)
+                                  stability_axis=stability_axis, ari_gain=ari)
         t, z = fcs.simulate(pilot, T_FINAL)
         phi, beta, alpha = (np.degrees(z[:, i]) for i in (PHI, BETA, ALPHA))
-        print(f"{name:20s}: max |beta| {np.abs(beta).max():5.2f} deg, "
+        print(f"{name:26s}: max |beta| {np.abs(beta).max():5.2f} deg, "
               f"bank at {T_FINAL:.0f} s {phi[-1]:5.1f} deg, "
               f"alpha {alpha.min():4.1f} - {alpha.max():4.1f} deg, "
               f"max |aileron| {np.abs(z[:, DA]).max():4.1f}, "

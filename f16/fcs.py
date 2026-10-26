@@ -17,7 +17,8 @@ while the elevator is saturated.
 With roll_command = (kp, kff) the pilot roll input is a roll rate [deg/s]
 instead of an aileron angle (see roll.py). With stability_axis = True the yaw
 damper acts on the stability-axis yaw rate r - p tan(alpha), so the aircraft
-rolls about the velocity vector instead of the body axis.
+rolls about the velocity vector instead of the body axis. ari_gain adds the
+aileron-rudder interconnect, rudder = ari_gain * roll rate command.
 
 Augmented state z (20):
     z[0:13]  aircraft state (see dynamics.py)
@@ -86,6 +87,7 @@ class FlightControlSystem:
     `limiter` is an EnvelopeLimiter or None; it only acts with g_command.
     `roll_command` is (kp, kff) [deg per deg/s] or None for direct aileron input.
     `stability_axis` makes the yaw damper act on r - p tan(alpha).
+    `ari_gain` [deg of rudder per deg/s] acts with roll_command.
     """
 
     def __init__(self, x0: np.ndarray, u0: np.ndarray, gains: SasGains,
@@ -94,7 +96,7 @@ class FlightControlSystem:
                  model: str = "tables", g_command: tuple[float, float] | None = None,
                  limiter: EnvelopeLimiter | None = None, anti_windup: bool = True,
                  roll_command: tuple[float, float] | None = None,
-                 stability_axis: bool = False):
+                 stability_axis: bool = False, ari_gain: float = 0.0):
         self.x0, self.u0, self.g = x0, u0, gains
         self.tau, self.xcg = washout_tau, xcg
         self.lead, self.delay = lead, delay
@@ -102,6 +104,7 @@ class FlightControlSystem:
         self.g_command, self.limiter = g_command, limiter
         self.anti_windup = anti_windup
         self.roll_command, self.stability_axis = roll_command, stability_axis
+        self.ari_gain = ari_gain
         self.nz0 = load_factor_nz(x0, u0, xcg, model)
 
     def initial_state(self) -> np.ndarray:
@@ -158,15 +161,16 @@ class FlightControlSystem:
             kp, ki = self.g_command
             pilot_pitch = -(kp * self.nz_error(z, pilot) + ki * z[XI])
         if self.roll_command is None:
-            pilot_roll = pilot[2]
+            pilot_roll, ari = pilot[2], 0.0
         else:
             kp_roll, kff_roll = self.roll_command
             p_cmd = pilot[2]                              # deg/s
             pilot_roll = kff_roll * p_cmd + kp_roll * (p_cmd - np.degrees(z[P]))
+            ari = self.ari_gain * p_cmd
         r_washed = self.yaw_rate_signal(z) - z[XW]
         de = self.u0[1] + sas + pilot_pitch
         da = self.u0[2] + pilot_roll
-        dr = self.u0[3] + self.g.k_r * np.degrees(r_washed) + pilot[3]
+        dr = self.u0[3] + self.g.k_r * np.degrees(r_washed) + ari + pilot[3]
         return np.array([de, da, dr])
 
     def derivatives(self, t: float, z: np.ndarray, pilot: PilotFn) -> np.ndarray:
