@@ -92,3 +92,14 @@ def test_nonlinear_fcs_returns_to_trim(setup):
 
     _, z = fcs.simulate(pilot, 15.0)
     assert np.degrees(abs(z[-1, ALPHA] - r.x[ALPHA])) < 0.01
+
+
+def test_margins_are_infinite_without_crossover():
+    # Stable first-order plant with a very small feedback gain: |L| < 1 everywhere
+    aa = np.array([[-1.0]])
+    ba = np.array([[1.0]])
+    k = np.array([[-0.01]])
+    m = loop_margins(aa, ba, k)
+    assert m.phase_margin_deg == np.inf
+    assert m.delay_margin == np.inf
+    assert m.gain_reduction_db == -np.inf

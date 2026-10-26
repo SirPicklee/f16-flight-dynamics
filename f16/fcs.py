@@ -155,12 +155,21 @@ def loop_transfer(aa: np.ndarray, ba: np.ndarray, k: np.ndarray, w: np.ndarray) 
 
 
 def loop_margins(aa: np.ndarray, ba: np.ndarray, k: np.ndarray) -> Margins:
-    """Phase, delay and gain-reduction margins of the loop broken at the actuator input."""
+    """Phase, delay and gain-reduction margins of the loop broken at the actuator input.
+
+    If the loop gain never reaches 1, there is no crossover and the phase and
+    delay margins are infinite: no amount of phase lag can destabilize the loop.
+    """
     w = np.logspace(-2, 3, 20000)
     loop = loop_transfer(aa, ba, k, w)
-    i = int(np.where(np.diff(np.sign(np.abs(loop) - 1.0)) != 0)[0][-1])
-    pm = 180.0 + float(np.degrees(np.angle(loop[i])))
-    wc = float(w[i])
+    crossings = np.where(np.diff(np.sign(np.abs(loop) - 1.0)) != 0)[0]
+    if len(crossings) == 0:
+        pm, wc, delay = np.inf, np.nan, np.inf
+    else:
+        i = int(crossings[-1])
+        pm = 180.0 + float(np.degrees(np.angle(loop[i])))
+        wc = float(w[i])
+        delay = np.radians(pm) / wc
 
     def max_real(scale):
         return float(np.max(np.linalg.eigvals(aa + scale * ba @ k).real))
@@ -174,4 +183,4 @@ def loop_margins(aa: np.ndarray, ba: np.ndarray, k: np.ndarray) -> Margins:
             mid = 0.5 * (lo + hi)
             lo, hi = (lo, mid) if max_real(mid) < 0.0 else (mid, hi)
         gain_red = 20.0 * np.log10(hi)
-    return Margins(pm, wc, np.radians(pm) / wc, float(gain_red))
+    return Margins(pm, wc, delay, float(gain_red))

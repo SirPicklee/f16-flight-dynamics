@@ -5,6 +5,11 @@ SAS gains are designed at every feasible point of a speed-altitude grid and
 stored as tables. In flight, the gains are interpolated from the tables using
 the current airspeed and altitude, as a real flight control computer does
 with its air data.
+
+CgGainSchedule adds the CG position as a third scheduling variable: one
+speed-altitude table is built per CG value and the gains are interpolated
+linearly between them, as a flight control computer can do with a CG
+estimate from the fuel system.
 """
 
 from dataclasses import dataclass
@@ -20,6 +25,7 @@ from f16.trim import trim_level
 
 DEFAULT_SPEEDS = np.arange(250.0, 951.0, 50.0)       # ft/s
 DEFAULT_ALTITUDES = np.arange(0.0, 45001.0, 5000.0)  # ft
+DEFAULT_CGS = (0.30, 0.34, 0.38)
 
 
 def _fill_outside(table: np.ndarray) -> np.ndarray:
@@ -44,8 +50,9 @@ class GainSchedule:
     k_r: np.ndarray
     feasible: np.ndarray  # True where the gains were designed
 
-    def gains(self, vt: float, alt: float) -> SasGains:
-        """Interpolated gains at the given airspeed [ft/s] and altitude [ft]."""
+    def gains(self, vt: float, alt: float, xcg: float | None = None) -> SasGains:
+        """Interpolated gains at the given airspeed [ft/s] and altitude [ft].
+        The CG argument is accepted for a common interface and ignored."""
         args = (self.altitudes, self.speeds)
         return SasGains(k_alpha=interp2(*args, self.k_alpha, alt, vt),
                         k_q=interp2(*args, self.k_q, alt, vt),
@@ -71,3 +78,27 @@ def build_schedule(speeds=DEFAULT_SPEEDS, altitudes=DEFAULT_ALTITUDES,
             feasible[i, j] = True
     return GainSchedule(np.asarray(speeds, float), np.asarray(altitudes, float),
                         _fill_outside(ka), _fill_outside(kq), _fill_outside(kr), feasible)
+
+
+@dataclass
+class CgGainSchedule:
+    cgs: np.ndarray                   # CG values the tables were designed for
+    schedules: list[GainSchedule]     # one speed-altitude schedule per CG
+
+    def gains(self, vt: float, alt: float, xcg: float | None = None) -> SasGains:
+        """Gains interpolated in speed, altitude and CG. Outside the CG range
+        the nearest table is used."""
+        if xcg is None:
+            xcg = c.XCGR
+        per_cg = [s.gains(vt, alt) for s in self.schedules]
+        return SasGains(
+            k_alpha=float(np.interp(xcg, self.cgs, [g.k_alpha for g in per_cg])),
+            k_q=float(np.interp(xcg, self.cgs, [g.k_q for g in per_cg])),
+            k_r=float(np.interp(xcg, self.cgs, [g.k_r for g in per_cg])))
+
+
+def build_cg_schedule(cgs=DEFAULT_CGS, **design) -> CgGainSchedule:
+    """Build one speed-altitude schedule per CG value. Keyword arguments
+    (wn, zeta_sp, ...) are passed to build_schedule."""
+    schedules = [build_schedule(xcg=x, **design) for x in cgs]
+    return CgGainSchedule(np.asarray(cgs, float), schedules)
