@@ -9,7 +9,10 @@ placed where the linear Monte Carlo analysis puts them: on the SAS output,
 before the pilot command is added.
 
 With g_command = (kp, ki) the pilot pitch input is a load factor increment
-[g] instead of an elevator angle, tracked by a PI loop on the nz error.
+[g] instead of an elevator angle, tracked by a PI loop on the nz error. An
+optional envelope limiter clips the g command and reduces it above an angle
+of attack threshold; conditional integration prevents integrator windup
+while the elevator is saturated.
 
 Augmented state z (20):
     z[0:13]  aircraft state (see dynamics.py)
@@ -55,27 +58,40 @@ ELEVATOR = Actuator(20.2, 25.0, 60.0)
 AILERON = Actuator(20.2, 21.5, 80.0)
 RUDDER = Actuator(20.2, 30.0, 120.0)
 
+
+@dataclass(frozen=True)
+class EnvelopeLimiter:
+    """Load factor and angle-of-attack limiter acting on the g command."""
+    nz_max: float = 9.0          # total load factor limit [g]
+    nz_min: float = -3.0         # total load factor limit [g]
+    alpha_start: float = 19.0    # angle of attack where the limiter starts [deg]
+    alpha_gain: float = 3.0      # command reduction [g per deg above alpha_start]
+
+
 PilotFn = Callable[[float], np.ndarray]
 
 
 class FlightControlSystem:
-    """SAS with actuators, washout, optional lead filter, delay and g command,
-    wrapped around the nonlinear model.
+    """SAS with actuators, washout, optional lead filter, delay, g command and
+    envelope limiter, wrapped around the nonlinear model.
 
     `lead` is any object with `zero` and `pole` attributes [rad/s], for
     example f16.monte_carlo.LeadFilter. `delay` is in seconds.
     `g_command` is (kp [deg/g], ki [deg/(g s)]) or None for direct elevator input.
+    `limiter` is an EnvelopeLimiter or None; it only acts with g_command.
     """
 
     def __init__(self, x0: np.ndarray, u0: np.ndarray, gains: SasGains,
                  washout_tau: float = 1.0, xcg: float = c.XCGR, lead=None,
                  delay: float = 0.0, elevator: Actuator = ELEVATOR,
-                 model: str = "tables", g_command: tuple[float, float] | None = None):
+                 model: str = "tables", g_command: tuple[float, float] | None = None,
+                 limiter: EnvelopeLimiter | None = None, anti_windup: bool = True):
         self.x0, self.u0, self.g = x0, u0, gains
         self.tau, self.xcg = washout_tau, xcg
         self.lead, self.delay = lead, delay
         self.elevator, self.model = elevator, model
-        self.g_command = g_command
+        self.g_command, self.limiter = g_command, limiter
+        self.anti_windup = anti_windup
         self.nz0 = load_factor_nz(x0, u0, xcg, model)
 
     def initial_state(self) -> np.ndarray:
@@ -89,9 +105,21 @@ class FlightControlSystem:
         u = np.array([self.u0[0] + pilot[0], z[DE], z[DA], z[DR]])
         return load_factor_nz(z[:N_AIRCRAFT], u, self.xcg, self.model)
 
+    def nz_command(self, z: np.ndarray, pilot: np.ndarray) -> float:
+        """Commanded load factor increment after the envelope limiter [g]."""
+        r = float(pilot[1])
+        lim = self.limiter
+        if lim is None:
+            return r
+        r = float(np.clip(r, lim.nz_min - self.nz0, lim.nz_max - self.nz0))
+        excess = float(np.degrees(z[ALPHA])) - lim.alpha_start
+        if excess > 0.0:
+            r -= lim.alpha_gain * excess
+        return r
+
     def nz_error(self, z: np.ndarray, pilot: np.ndarray) -> float:
         """Commanded minus actual load factor increment [g]."""
-        return pilot[1] - (self.nz(z, pilot) - self.nz0)
+        return self.nz_command(z, pilot) - (self.nz(z, pilot) - self.nz0)
 
     def _pitch_feedback(self, z: np.ndarray) -> tuple[float, float]:
         """Raw SAS signal e and lead-filtered SAS signal, both in deg of elevator."""
@@ -134,14 +162,22 @@ class FlightControlSystem:
         if self.delay > 0.0:
             zd[XD] = (2.0 / self.delay) * (sas - z[XD])
         if self.g_command is not None:
-            zd[XI] = self.nz_error(z, p)
+            err = self.nz_error(z, p)
+            limit = self.elevator.position_limit
+            # Conditional integration: stop integrating while the elevator is
+            # saturated and the error would push it further into the limit
+            winding_up = ((cmd[0] <= -limit and err > 0.0)
+                          or (cmd[0] >= limit and err < 0.0))
+            zd[XI] = 0.0 if (self.anti_windup and winding_up) else err
         return zd
 
-    def simulate(self, pilot: PilotFn, t_final: float, dt: float = 0.01):
-        """Returns (t, Z) with Z of shape (N, 20)."""
+    def simulate(self, pilot: PilotFn, t_final: float, dt: float = 0.01,
+                 z0: np.ndarray | None = None):
+        """Returns (t, Z) with Z of shape (N, 20). z0 overrides the trim start."""
+        start = self.initial_state() if z0 is None else z0
         t_eval = np.arange(0.0, t_final + dt / 2, dt)
         sol = solve_ivp(lambda t, z: self.derivatives(t, z, pilot),
-                        (0.0, t_final), self.initial_state(), t_eval=t_eval,
+                        (0.0, t_final), start, t_eval=t_eval,
                         max_step=dt, rtol=1e-8, atol=1e-10)
         return sol.t, sol.y.T
 
