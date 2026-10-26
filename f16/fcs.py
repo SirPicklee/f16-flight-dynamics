@@ -14,6 +14,9 @@ optional envelope limiter clips the g command and reduces it above an angle
 of attack threshold; conditional integration prevents integrator windup
 while the elevator is saturated.
 
+With roll_command = (kp, kff) the pilot roll input is a roll rate [deg/s]
+instead of an aileron angle (see roll.py).
+
 Augmented state z (20):
     z[0:13]  aircraft state (see dynamics.py)
     z[13]    elevator position [deg]
@@ -32,7 +35,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 
 from f16 import constants as c
-from f16.dynamics import ALPHA, Q, R, f16_derivatives, load_factor_nz
+from f16.dynamics import ALPHA, P, Q, R, f16_derivatives, load_factor_nz
 from f16.linearize import LAT_STATES, LONG_STATES
 from f16.sas import SasGains
 
@@ -72,26 +75,29 @@ PilotFn = Callable[[float], np.ndarray]
 
 
 class FlightControlSystem:
-    """SAS with actuators, washout, optional lead filter, delay, g command and
-    envelope limiter, wrapped around the nonlinear model.
+    """SAS with actuators, washout, optional lead filter, delay, g command,
+    envelope limiter and roll rate command, wrapped around the nonlinear model.
 
     `lead` is any object with `zero` and `pole` attributes [rad/s], for
     example f16.monte_carlo.LeadFilter. `delay` is in seconds.
     `g_command` is (kp [deg/g], ki [deg/(g s)]) or None for direct elevator input.
     `limiter` is an EnvelopeLimiter or None; it only acts with g_command.
+    `roll_command` is (kp, kff) [deg per deg/s] or None for direct aileron input.
     """
 
     def __init__(self, x0: np.ndarray, u0: np.ndarray, gains: SasGains,
                  washout_tau: float = 1.0, xcg: float = c.XCGR, lead=None,
                  delay: float = 0.0, elevator: Actuator = ELEVATOR,
                  model: str = "tables", g_command: tuple[float, float] | None = None,
-                 limiter: EnvelopeLimiter | None = None, anti_windup: bool = True):
+                 limiter: EnvelopeLimiter | None = None, anti_windup: bool = True,
+                 roll_command: tuple[float, float] | None = None):
         self.x0, self.u0, self.g = x0, u0, gains
         self.tau, self.xcg = washout_tau, xcg
         self.lead, self.delay = lead, delay
         self.elevator, self.model = elevator, model
         self.g_command, self.limiter = g_command, limiter
         self.anti_windup = anti_windup
+        self.roll_command = roll_command
         self.nz0 = load_factor_nz(x0, u0, xcg, model)
 
     def initial_state(self) -> np.ndarray:
@@ -140,9 +146,15 @@ class FlightControlSystem:
         else:
             kp, ki = self.g_command
             pilot_pitch = -(kp * self.nz_error(z, pilot) + ki * z[XI])
+        if self.roll_command is None:
+            pilot_roll = pilot[2]
+        else:
+            kp_roll, kff_roll = self.roll_command
+            p_cmd = pilot[2]                              # deg/s
+            pilot_roll = kff_roll * p_cmd + kp_roll * (p_cmd - np.degrees(z[P]))
         r_washed = z[R] - z[XW]
         de = self.u0[1] + sas + pilot_pitch
-        da = self.u0[2] + pilot[2]
+        da = self.u0[2] + pilot_roll
         dr = self.u0[3] + self.g.k_r * np.degrees(r_washed) + pilot[3]
         return np.array([de, da, dr])
 
