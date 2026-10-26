@@ -13,7 +13,8 @@ pitch loop is rebuilt for that sample and checked against requirements:
 CG changes are applied to the nonlinear model (re-trim and re-linearize);
 the other uncertainties scale terms of the linearized pitch dynamics.
 The aerodynamic model of the "true" aircraft can be chosen independently of
-the model the gains were designed on.
+the model the gains were designed on. An optional lead filter can be placed
+on the SAS output.
 """
 
 from dataclasses import dataclass
@@ -44,6 +45,25 @@ class Sample:
     jyy_scale: float    # pitch inertia factor
     actuator_bw: float  # [rad/s]
     delay: float        # computing and sensor delay [s]
+
+
+@dataclass(frozen=True)
+class LeadFilter:
+    """Lead filter C(s) = (p/z) (s + z) / (s + p) with unit gain at low frequency."""
+    center: float   # frequency of maximum phase lead [rad/s]
+    ratio: float    # pole / zero ratio, >= 1
+
+    @property
+    def zero(self) -> float:
+        return self.center / np.sqrt(self.ratio)
+
+    @property
+    def pole(self) -> float:
+        return self.center * np.sqrt(self.ratio)
+
+    @property
+    def max_phase_deg(self) -> float:
+        return float(np.degrees(np.arcsin((self.ratio - 1.0) / (self.ratio + 1.0))))
 
 
 @dataclass
@@ -83,10 +103,13 @@ def draw_sample(rng: np.random.Generator, cg_range=(0.30, 0.38), model: str = "t
     return s, r
 
 
-def perturbed_pitch_loop(a: np.ndarray, b: np.ndarray, g: SasGains, s: Sample):
-    """Pitch loop [vt, alpha, theta, q, elevator, delay] broken at the SAS output.
+def perturbed_pitch_loop(a: np.ndarray, b: np.ndarray, g: SasGains, s: Sample,
+                         lead: LeadFilter | None = None):
+    """Pitch loop [vt, alpha, theta, q, elevator, delay (, lead)] broken at the SAS output.
 
     The delay is a first-order Pade approximation (1 - s*tau/2) / (1 + s*tau/2).
+    With a lead filter, the filter state x_f obeys x_f' = -p x_f + K x and the
+    SAS output is (p/z) (K x + (z - p) x_f).
     """
     lon = np.array(LONG_STATES)
     a4 = a[np.ix_(lon, lon)].copy()
@@ -110,13 +133,27 @@ def perturbed_pitch_loop(a: np.ndarray, b: np.ndarray, g: SasGains, s: Sample):
     k = np.zeros((1, 6))
     k[0, LONG_STATES.index(ALPHA)] = np.degrees(g.k_alpha)
     k[0, iq] = np.degrees(g.k_q)
-    return aa, ba, k
+    if lead is None:
+        return aa, ba, k
+
+    z, p = lead.zero, lead.pole
+    n = aa.shape[0]
+    aa2 = np.zeros((n + 1, n + 1))
+    aa2[:n, :n] = aa
+    aa2[n, :n] = k[0]          # filter driven by the proportional SAS signal
+    aa2[n, n] = -p
+    ba2 = np.vstack([ba, [[0.0]]])
+    k2 = np.zeros((1, n + 1))
+    k2[0, :n] = (p / z) * k[0]
+    k2[0, n] = (p / z) * (z - p)
+    return aa2, ba2, k2
 
 
-def evaluate(s: Sample, r, gains: SasGains, model: str = "tables") -> Result:
+def evaluate(s: Sample, r, gains: SasGains, model: str = "tables",
+             lead: LeadFilter | None = None) -> Result:
     """Rebuild the pitch loop for one sample and measure it."""
     a, b = linearize(r.x, r.u, xcg=s.xcg, model=model)
-    aa, ba, k = perturbed_pitch_loop(a, b, gains, s)
+    aa, ba, k = perturbed_pitch_loop(a, b, gains, s, lead)
     acl = aa + ba @ k
     stable = bool(np.max(np.linalg.eigvals(acl).real) < 0.0)
     osc = [m for m in modes(acl) if m.is_oscillatory and m.wn < 15.0]
@@ -129,15 +166,15 @@ def evaluate(s: Sample, r, gains: SasGains, model: str = "tables") -> Result:
 GainSource = Callable[[float, float, float], SasGains]
 
 
-def run(n: int, gain_source: GainSource, seed: int = 0,
-        cg_range=(0.30, 0.38), model: str = "tables") -> list[Result]:
+def run(n: int, gain_source: GainSource, seed: int = 0, cg_range=(0.30, 0.38),
+        model: str = "tables", lead: LeadFilter | None = None) -> list[Result]:
     """Run n samples; gain_source(vt, alt, xcg) returns the SAS gains to use.
     `model` is the aerodynamic model of the aircraft being tested."""
     rng = np.random.default_rng(seed)
     results = []
     for _ in range(n):
         s, r = draw_sample(rng, cg_range, model)
-        results.append(evaluate(s, r, gain_source(s.vt, s.alt, s.xcg), model))
+        results.append(evaluate(s, r, gain_source(s.vt, s.alt, s.xcg), model, lead))
     return results
 
 

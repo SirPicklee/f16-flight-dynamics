@@ -3,8 +3,8 @@ import pytest
 
 from f16.fcs import loop_margins, pitch_loop
 from f16.linearize import linearize
-from f16.monte_carlo import (Result, Sample, evaluate, failure_rate_upper_bound,
-                             pass_rate, run)
+from f16.monte_carlo import (LeadFilter, Result, Sample, evaluate,
+                             failure_rate_upper_bound, pass_rate, run)
 from f16.sas import SasGains
 from f16.trim import trim_level
 
@@ -76,3 +76,18 @@ def test_pass_rate_filters_by_cg_and_delay():
 def test_rule_of_three():
     assert failure_rate_upper_bound(100) == pytest.approx(0.03)
     assert failure_rate_upper_bound(300) == pytest.approx(0.01)
+
+
+def test_lead_filter_peak_phase_at_center():
+    lead = LeadFilter(center=3.0, ratio=2.5)
+    w = lead.center
+    c = (lead.pole / lead.zero) * (1j * w + lead.zero) / (1j * w + lead.pole)
+    assert np.degrees(np.angle(c)) == pytest.approx(lead.max_phase_deg, abs=1e-6)
+
+
+def test_lead_filter_with_unit_ratio_changes_nothing(nominal_trim):
+    plain = evaluate(nominal_sample(delay=0.03), nominal_trim, NOMINAL_GAINS)
+    neutral = evaluate(nominal_sample(delay=0.03), nominal_trim, NOMINAL_GAINS,
+                       lead=LeadFilter(center=3.0, ratio=1.0))
+    assert neutral.phase_margin == pytest.approx(plain.phase_margin, abs=1e-6)
+    assert neutral.gain_reduction_db == pytest.approx(plain.gain_reduction_db, abs=1e-6)
