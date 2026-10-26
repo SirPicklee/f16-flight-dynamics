@@ -61,12 +61,12 @@ class Result:
                 and ZETA_SP_RANGE[0] <= self.sp_zeta <= ZETA_SP_RANGE[1])
 
 
-def draw_sample(rng: np.random.Generator):
+def draw_sample(rng: np.random.Generator, cg_range=(0.30, 0.38)):
     """Draw one sample with a flight condition inside the envelope.
     Returns the sample and its trim result."""
     while True:
         vt, alt = rng.uniform(250.0, 950.0), rng.uniform(0.0, 45000.0)
-        xcg = rng.uniform(0.30, 0.38)
+        xcg = rng.uniform(*cg_range)
         if adc(vt, alt)[0] > MACH_LIMIT:
             continue
         r = trim_level(vt, alt=alt, xcg=xcg)
@@ -127,12 +127,13 @@ def evaluate(s: Sample, r, gains: SasGains) -> Result:
 GainSource = Callable[[float, float, float], SasGains]
 
 
-def run(n: int, gain_source: GainSource, seed: int = 0) -> list[Result]:
+def run(n: int, gain_source: GainSource, seed: int = 0,
+        cg_range=(0.30, 0.38)) -> list[Result]:
     """Run n samples; gain_source(vt, alt, xcg) returns the SAS gains to use."""
     rng = np.random.default_rng(seed)
     results = []
     for _ in range(n):
-        s, r = draw_sample(rng)
+        s, r = draw_sample(rng, cg_range)
         results.append(evaluate(s, r, gain_source(s.vt, s.alt, s.xcg)))
     return results
 
