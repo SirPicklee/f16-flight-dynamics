@@ -1,10 +1,11 @@
 import numpy as np
 import pytest
 
-from f16.dynamics import ALPHA, R
-from f16.fcs import (DE, ELEVATOR, XW, FlightControlSystem, lateral_loop,
-                     loop_margins, pitch_loop)
+from f16.dynamics import ALPHA, Q, R
+from f16.fcs import (DA, DE, DR, ELEVATOR, XD, XF, XW, FlightControlSystem,
+                     lateral_loop, loop_margins, pitch_loop)
 from f16.linearize import linearize, modes
+from f16.monte_carlo import LeadFilter
 from f16.sas import design_pitch_sas, design_yaw_damper
 from f16.simulate import doublet
 from f16.trim import trim_level
@@ -103,3 +104,35 @@ def test_margins_are_infinite_without_crossover():
     assert m.phase_margin_deg == np.inf
     assert m.delay_margin == np.inf
     assert m.gain_reduction_db == -np.inf
+
+
+def test_lead_and_delay_start_in_equilibrium(setup):
+    r, _, _, g = setup
+    fcs = FlightControlSystem(r.x, r.u, g, lead=LeadFilter(6.0, 2.5), delay=0.045)
+    zd = fcs.derivatives(0.0, fcs.initial_state(), lambda t: np.zeros(4))
+    assert np.max(np.abs(zd[[0, 1, 7, DE, DA, DR, XW, XF, XD]])) < 1e-9
+
+
+def test_neutral_lead_matches_plain_fcs(setup):
+    r, _, _, g = setup
+    plain = FlightControlSystem(r.x, r.u, g)
+    neutral = FlightControlSystem(r.x, r.u, g, lead=LeadFilter(6.0, 1.0))
+    z = plain.initial_state()
+    z[ALPHA] += np.radians(1.0)
+    z[Q] += np.radians(2.0)
+    z[XF] = 0.3
+    assert neutral.commands(z, np.zeros(4)) == pytest.approx(plain.commands(z, np.zeros(4)))
+
+
+def test_lead_and_delay_pass_steady_signals_unchanged(setup):
+    # Once the filter and the delay have settled, a constant SAS signal is unchanged
+    r, _, _, g = setup
+    lead = LeadFilter(6.0, 2.5)
+    plain = FlightControlSystem(r.x, r.u, g)
+    fcs = FlightControlSystem(r.x, r.u, g, lead=lead, delay=0.045)
+    z = plain.initial_state()
+    z[ALPHA] += np.radians(1.0)
+    e = g.k_alpha * 1.0             # SAS signal for 1 deg of alpha
+    z[XF] = e / lead.pole           # filter settled
+    z[XD] = e                       # delay settled
+    assert fcs.commands(z, np.zeros(4))[0] == pytest.approx(plain.commands(z, np.zeros(4))[0])

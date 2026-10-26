@@ -3,14 +3,19 @@ Flight control system with actuator dynamics and a yaw-damper washout.
 
 Each control surface is driven by a first-order actuator with position and
 rate limits. The yaw damper feeds back washed-out yaw rate, so it damps the
-dutch roll but does not oppose a steady turn.
+dutch roll but does not oppose a steady turn. The pitch SAS feedback can pass
+through an optional lead filter and a computing delay (first-order Pade),
+placed where the linear Monte Carlo analysis puts them: on the SAS output,
+before the pilot command is added.
 
-Augmented state z (17):
+Augmented state z (19):
     z[0:13]  aircraft state (see dynamics.py)
     z[13]    elevator position [deg]
     z[14]    aileron position  [deg]
     z[15]    rudder position   [deg]
     z[16]    washout filter state [rad/s]
+    z[17]    lead filter state [deg]
+    z[18]    delay (Pade) state [deg]
 """
 
 from dataclasses import dataclass
@@ -25,7 +30,8 @@ from f16.linearize import LAT_STATES, LONG_STATES
 from f16.sas import SasGains
 
 N_AIRCRAFT = 13
-DE, DA, DR, XW = 13, 14, 15, 16
+N_STATES = 19
+DE, DA, DR, XW, XF, XD = 13, 14, 15, 16, 17, 18
 
 
 @dataclass(frozen=True)
@@ -49,25 +55,44 @@ PilotFn = Callable[[float], np.ndarray]
 
 
 class FlightControlSystem:
-    """SAS with actuators and washout, wrapped around the nonlinear model."""
+    """SAS with actuators, washout, optional lead filter and delay, wrapped
+    around the nonlinear model.
+
+    `lead` is any object with `zero` and `pole` attributes [rad/s], for
+    example f16.monte_carlo.LeadFilter. `delay` is in seconds.
+    """
 
     def __init__(self, x0: np.ndarray, u0: np.ndarray, gains: SasGains,
-                 washout_tau: float = 1.0, xcg: float = c.XCGR):
+                 washout_tau: float = 1.0, xcg: float = c.XCGR, lead=None,
+                 delay: float = 0.0, elevator: Actuator = ELEVATOR,
+                 model: str = "tables"):
         self.x0, self.u0, self.g = x0, u0, gains
         self.tau, self.xcg = washout_tau, xcg
+        self.lead, self.delay = lead, delay
+        self.elevator, self.model = elevator, model
 
     def initial_state(self) -> np.ndarray:
-        z = np.zeros(17)
+        z = np.zeros(N_STATES)
         z[:N_AIRCRAFT] = self.x0
         z[DE], z[DA], z[DR] = self.u0[1], self.u0[2], self.u0[3]
         return z
 
+    def _pitch_feedback(self, z: np.ndarray) -> tuple[float, float]:
+        """Raw SAS signal e and lead-filtered SAS signal, both in deg of elevator."""
+        dx = z[:N_AIRCRAFT] - self.x0
+        e = self.g.k_alpha * np.degrees(dx[ALPHA]) + self.g.k_q * np.degrees(dx[Q])
+        if self.lead is None:
+            return e, e
+        zf, pf = self.lead.zero, self.lead.pole
+        return e, (pf / zf) * (e + (zf - pf) * z[XF])
+
     def commands(self, z: np.ndarray, pilot: np.ndarray) -> np.ndarray:
         """Surface commands [deg] from trim, feedback and pilot input."""
-        dx = z[:N_AIRCRAFT] - self.x0
+        _, sas = self._pitch_feedback(z)
+        if self.delay > 0.0:
+            sas = 2.0 * z[XD] - sas        # Pade output
         r_washed = z[R] - z[XW]
-        de = (self.u0[1] + self.g.k_alpha * np.degrees(dx[ALPHA])
-              + self.g.k_q * np.degrees(dx[Q]) + pilot[1])
+        de = self.u0[1] + sas + pilot[1]
         da = self.u0[2] + pilot[2]
         dr = self.u0[3] + self.g.k_r * np.degrees(r_washed) + pilot[3]
         return np.array([de, da, dr])
@@ -76,16 +101,21 @@ class FlightControlSystem:
         p = pilot(t)
         cmd = self.commands(z, p)
         u = np.array([self.u0[0] + p[0], z[DE], z[DA], z[DR]])
-        zd = np.zeros(17)
-        zd[:N_AIRCRAFT] = f16_derivatives(z[:N_AIRCRAFT], u, self.xcg)
-        zd[DE] = ELEVATOR.rate(z[DE], cmd[0])
+        zd = np.zeros(N_STATES)
+        zd[:N_AIRCRAFT] = f16_derivatives(z[:N_AIRCRAFT], u, self.xcg, self.model)
+        zd[DE] = self.elevator.rate(z[DE], cmd[0])
         zd[DA] = AILERON.rate(z[DA], cmd[1])
         zd[DR] = RUDDER.rate(z[DR], cmd[2])
         zd[XW] = (z[R] - z[XW]) / self.tau
+        e, sas = self._pitch_feedback(z)
+        if self.lead is not None:
+            zd[XF] = -self.lead.pole * z[XF] + e
+        if self.delay > 0.0:
+            zd[XD] = (2.0 / self.delay) * (sas - z[XD])
         return zd
 
     def simulate(self, pilot: PilotFn, t_final: float, dt: float = 0.01):
-        """Returns (t, Z) with Z of shape (N, 17)."""
+        """Returns (t, Z) with Z of shape (N, 19)."""
         t_eval = np.arange(0.0, t_final + dt / 2, dt)
         sol = solve_ivp(lambda t, z: self.derivatives(t, z, pilot),
                         (0.0, t_final), self.initial_state(), t_eval=t_eval,
