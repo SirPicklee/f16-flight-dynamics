@@ -12,6 +12,8 @@ pitch loop is rebuilt for that sample and checked against requirements:
 
 CG changes are applied to the nonlinear model (re-trim and re-linearize);
 the other uncertainties scale terms of the linearized pitch dynamics.
+The aerodynamic model of the "true" aircraft can be chosen independently of
+the model the gains were designed on.
 """
 
 from dataclasses import dataclass
@@ -61,7 +63,7 @@ class Result:
                 and ZETA_SP_RANGE[0] <= self.sp_zeta <= ZETA_SP_RANGE[1])
 
 
-def draw_sample(rng: np.random.Generator, cg_range=(0.30, 0.38)):
+def draw_sample(rng: np.random.Generator, cg_range=(0.30, 0.38), model: str = "tables"):
     """Draw one sample with a flight condition inside the envelope.
     Returns the sample and its trim result."""
     while True:
@@ -69,7 +71,7 @@ def draw_sample(rng: np.random.Generator, cg_range=(0.30, 0.38)):
         xcg = rng.uniform(*cg_range)
         if adc(vt, alt)[0] > MACH_LIMIT:
             continue
-        r = trim_level(vt, alt=alt, xcg=xcg)
+        r = trim_level(vt, alt=alt, xcg=xcg, model=model)
         if r.success and r.alpha_deg <= ALPHA_LIMIT_DEG:
             break
     s = Sample(vt, alt, xcg,
@@ -111,9 +113,9 @@ def perturbed_pitch_loop(a: np.ndarray, b: np.ndarray, g: SasGains, s: Sample):
     return aa, ba, k
 
 
-def evaluate(s: Sample, r, gains: SasGains) -> Result:
+def evaluate(s: Sample, r, gains: SasGains, model: str = "tables") -> Result:
     """Rebuild the pitch loop for one sample and measure it."""
-    a, b = linearize(r.x, r.u, xcg=s.xcg)
+    a, b = linearize(r.x, r.u, xcg=s.xcg, model=model)
     aa, ba, k = perturbed_pitch_loop(a, b, gains, s)
     acl = aa + ba @ k
     stable = bool(np.max(np.linalg.eigvals(acl).real) < 0.0)
@@ -128,13 +130,14 @@ GainSource = Callable[[float, float, float], SasGains]
 
 
 def run(n: int, gain_source: GainSource, seed: int = 0,
-        cg_range=(0.30, 0.38)) -> list[Result]:
-    """Run n samples; gain_source(vt, alt, xcg) returns the SAS gains to use."""
+        cg_range=(0.30, 0.38), model: str = "tables") -> list[Result]:
+    """Run n samples; gain_source(vt, alt, xcg) returns the SAS gains to use.
+    `model` is the aerodynamic model of the aircraft being tested."""
     rng = np.random.default_rng(seed)
     results = []
     for _ in range(n):
-        s, r = draw_sample(rng, cg_range)
-        results.append(evaluate(s, r, gain_source(s.vt, s.alt, s.xcg)))
+        s, r = draw_sample(rng, cg_range, model)
+        results.append(evaluate(s, r, gain_source(s.vt, s.alt, s.xcg), model))
     return results
 
 
