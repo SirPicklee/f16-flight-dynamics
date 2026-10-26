@@ -15,7 +15,9 @@ of attack threshold; conditional integration prevents integrator windup
 while the elevator is saturated.
 
 With roll_command = (kp, kff) the pilot roll input is a roll rate [deg/s]
-instead of an aileron angle (see roll.py).
+instead of an aileron angle (see roll.py). With stability_axis = True the yaw
+damper acts on the stability-axis yaw rate r - p tan(alpha), so the aircraft
+rolls about the velocity vector instead of the body axis.
 
 Augmented state z (20):
     z[0:13]  aircraft state (see dynamics.py)
@@ -83,6 +85,7 @@ class FlightControlSystem:
     `g_command` is (kp [deg/g], ki [deg/(g s)]) or None for direct elevator input.
     `limiter` is an EnvelopeLimiter or None; it only acts with g_command.
     `roll_command` is (kp, kff) [deg per deg/s] or None for direct aileron input.
+    `stability_axis` makes the yaw damper act on r - p tan(alpha).
     """
 
     def __init__(self, x0: np.ndarray, u0: np.ndarray, gains: SasGains,
@@ -90,14 +93,15 @@ class FlightControlSystem:
                  delay: float = 0.0, elevator: Actuator = ELEVATOR,
                  model: str = "tables", g_command: tuple[float, float] | None = None,
                  limiter: EnvelopeLimiter | None = None, anti_windup: bool = True,
-                 roll_command: tuple[float, float] | None = None):
+                 roll_command: tuple[float, float] | None = None,
+                 stability_axis: bool = False):
         self.x0, self.u0, self.g = x0, u0, gains
         self.tau, self.xcg = washout_tau, xcg
         self.lead, self.delay = lead, delay
         self.elevator, self.model = elevator, model
         self.g_command, self.limiter = g_command, limiter
         self.anti_windup = anti_windup
-        self.roll_command = roll_command
+        self.roll_command, self.stability_axis = roll_command, stability_axis
         self.nz0 = load_factor_nz(x0, u0, xcg, model)
 
     def initial_state(self) -> np.ndarray:
@@ -127,6 +131,13 @@ class FlightControlSystem:
         """Commanded minus actual load factor increment [g]."""
         return self.nz_command(z, pilot) - (self.nz(z, pilot) - self.nz0)
 
+    def yaw_rate_signal(self, z: np.ndarray) -> float:
+        """Yaw rate fed to the yaw damper [rad/s]: body axis, or stability
+        axis r - p tan(alpha) to roll about the velocity vector."""
+        if self.stability_axis:
+            return float(z[R] - z[P] * np.tan(z[ALPHA]))
+        return float(z[R])
+
     def _pitch_feedback(self, z: np.ndarray) -> tuple[float, float]:
         """Raw SAS signal e and lead-filtered SAS signal, both in deg of elevator."""
         dx = z[:N_AIRCRAFT] - self.x0
@@ -152,7 +163,7 @@ class FlightControlSystem:
             kp_roll, kff_roll = self.roll_command
             p_cmd = pilot[2]                              # deg/s
             pilot_roll = kff_roll * p_cmd + kp_roll * (p_cmd - np.degrees(z[P]))
-        r_washed = z[R] - z[XW]
+        r_washed = self.yaw_rate_signal(z) - z[XW]
         de = self.u0[1] + sas + pilot_pitch
         da = self.u0[2] + pilot_roll
         dr = self.u0[3] + self.g.k_r * np.degrees(r_washed) + pilot[3]
@@ -167,7 +178,7 @@ class FlightControlSystem:
         zd[DE] = self.elevator.rate(z[DE], cmd[0])
         zd[DA] = AILERON.rate(z[DA], cmd[1])
         zd[DR] = RUDDER.rate(z[DR], cmd[2])
-        zd[XW] = (z[R] - z[XW]) / self.tau
+        zd[XW] = (self.yaw_rate_signal(z) - z[XW]) / self.tau
         e, sas = self._pitch_feedback(z)
         if self.lead is not None:
             zd[XF] = -self.lead.pole * z[XF] + e
